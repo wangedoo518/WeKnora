@@ -4,6 +4,7 @@ import { onMounted, ref, nextTick, onUnmounted, onUpdated, watch } from "vue";
 import { downKnowledgeDetails } from "@/api/knowledge-base/index";
 import { MessagePlugin } from "tdesign-vue-next";
 import picturePreview from '@/components/picture-preview.vue';
+import KnowledgeGraph from '@/components/knowledge-graph.vue';
 marked.use({
   mangle: false,
   headerIds: false,
@@ -141,6 +142,7 @@ const handleDetailsScroll = () => {
         : 'background: #3032360f;'
         ">
         <div class="md-content" v-html="processMarkdown(item.content)"></div>
+        <knowledge-graph v-if="item.relation_chunks && item.relation_chunks.length" :chunk="item" />
       </div>
       <template #footer>
         <t-button @click="handleClose">确定</t-button>
