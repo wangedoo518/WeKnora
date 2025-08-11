@@ -127,10 +127,125 @@ type InitializationRequest struct {
 	} `json:"documentSplitting" binding:"required"`
 }
 
+// initializeFromEnv attempts to set up the default tenant and models using
+// environment variables. It returns true when initialization is performed
+// successfully.
+func (h *InitializationHandler) initializeFromEnv(ctx context.Context) (bool, error) {
+	llmName := os.Getenv("INIT_LLM_MODEL_NAME")
+	embeddingName := os.Getenv("INIT_EMBEDDING_MODEL_NAME")
+	if llmName == "" || embeddingName == "" {
+		return false, nil
+	}
+
+	tenant, err := h.tenantService.GetTenantByID(ctx, types.InitDefaultTenantID)
+	if err != nil {
+		return false, err
+	}
+	if tenant == nil {
+		tenant = &types.Tenant{
+			ID:          types.InitDefaultTenantID,
+			Name:        "Default Tenant",
+			Description: "System Default Tenant",
+			RetrieverEngines: types.RetrieverEngines{Engines: []types.RetrieverEngineParams{
+				{
+					RetrieverType:       types.KeywordsRetrieverType,
+					RetrieverEngineType: types.PostgresRetrieverEngineType,
+				},
+				{
+					RetrieverType:       types.VectorRetrieverType,
+					RetrieverEngineType: types.PostgresRetrieverEngineType,
+				},
+			}},
+		}
+		if _, err = h.tenantService.CreateTenant(ctx, tenant); err != nil {
+			return false, err
+		}
+	}
+
+	newCtx := context.WithValue(ctx, types.TenantIDContextKey, types.InitDefaultTenantID)
+	existingModels, err := h.modelService.ListModels(newCtx)
+	if err != nil {
+		existingModels = []*types.Model{}
+	}
+	modelMap := make(map[types.ModelType]bool)
+	for _, m := range existingModels {
+		modelMap[m.Type] = true
+	}
+
+	if !modelMap[types.ModelTypeKnowledgeQA] {
+		llmModel := &types.Model{
+			TenantID:    types.InitDefaultTenantID,
+			Name:        llmName,
+			Type:        types.ModelTypeKnowledgeQA,
+			Source:      types.ModelSourceRemote,
+			Description: "LLM Model for Knowledge QA",
+			Parameters: types.ModelParameters{
+				BaseURL: os.Getenv("INIT_LLM_MODEL_BASE_URL"),
+				APIKey:  os.Getenv("INIT_LLM_MODEL_API_KEY"),
+			},
+			IsDefault: true,
+			Status:    types.ModelStatusActive,
+		}
+		if err := h.modelService.CreateModel(newCtx, llmModel); err != nil {
+			return false, err
+		}
+	}
+
+	if !modelMap[types.ModelTypeEmbedding] {
+		dimStr := os.Getenv("INIT_EMBEDDING_MODEL_DIMENSION")
+		dim, _ := strconv.Atoi(dimStr)
+		embeddingModel := &types.Model{
+			TenantID:    types.InitDefaultTenantID,
+			Name:        embeddingName,
+			Type:        types.ModelTypeEmbedding,
+			Source:      types.ModelSourceRemote,
+			Description: "Embedding Model",
+			Parameters: types.ModelParameters{
+				BaseURL: os.Getenv("INIT_EMBEDDING_MODEL_BASE_URL"),
+				APIKey:  os.Getenv("INIT_EMBEDDING_MODEL_API_KEY"),
+				EmbeddingParameters: types.EmbeddingParameters{
+					Dimension: dim,
+				},
+			},
+			IsDefault: true,
+			Status:    types.ModelStatusActive,
+		}
+		if err := h.modelService.CreateModel(newCtx, embeddingModel); err != nil {
+			return false, err
+		}
+	}
+
+	rerankName := os.Getenv("INIT_RERANK_MODEL_NAME")
+	if rerankName != "" && !modelMap[types.ModelTypeRerank] {
+		rerankModel := &types.Model{
+			TenantID:    types.InitDefaultTenantID,
+			Name:        rerankName,
+			Type:        types.ModelTypeRerank,
+			Source:      types.ModelSourceRemote,
+			Description: "Rerank Model",
+			Parameters: types.ModelParameters{
+				BaseURL: os.Getenv("INIT_RERANK_MODEL_BASE_URL"),
+				APIKey:  os.Getenv("INIT_RERANK_MODEL_API_KEY"),
+			},
+			IsDefault: true,
+			Status:    types.ModelStatusActive,
+		}
+		if err := h.modelService.CreateModel(newCtx, rerankModel); err != nil {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
 // CheckStatus 检查系统初始化状态
 func (h *InitializationHandler) CheckStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 	logger.Info(ctx, "Checking system initialization status")
+
+	if _, err := h.initializeFromEnv(ctx); err != nil {
+		logger.ErrorWithFields(ctx, err, nil)
+	}
 
 	// 检查是否存在租户
 	tenant, err := h.tenantService.GetTenantByID(ctx, types.InitDefaultTenantID)
